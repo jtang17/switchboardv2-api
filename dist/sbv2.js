@@ -22,16 +22,15 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.OracleAccount = exports.CrankAccount = exports.CrankRow = exports.LeaseAccount = exports.OracleQueueAccount = exports.PermissionAccount = exports.SwitchboardPermissionValue = exports.SwitchboardPermission = exports.JobAccount = exports.AggregatorAccount = exports.AggregatorHistoryRow = exports.SwitchboardError = exports.ProgramStateAccount = exports.SwitchboardDecimal = exports.SBV2_DEVNET_PID = void 0;
+exports.OracleAccount = exports.CrankAccount = exports.CrankRow = exports.LeaseAccount = exports.OracleQueueAccount = exports.PermissionAccount = exports.SwitchboardPermissionValue = exports.SwitchboardPermission = exports.JobAccount = exports.AggregatorAccount = exports.AggregatorHistoryRow = exports.SwitchboardError = exports.ProgramStateAccount = exports.SwitchboardDecimal = exports.SBV2_MAINNET_PID = exports.SBV2_DEVNET_PID = void 0;
 const anchor = __importStar(require("@project-serum/anchor"));
 const spl = __importStar(require("@solana/spl-token"));
 const web3_js_1 = require("@solana/web3.js");
 const switchboard_api_1 = require("@switchboard-xyz/switchboard-api");
-const assert_1 = __importDefault(require("assert"));
 const big_js_1 = __importDefault(require("big.js"));
 const crypto = __importStar(require("crypto"));
-// Devnet Program ID.
 exports.SBV2_DEVNET_PID = new web3_js_1.PublicKey("2TfB33aLaneQb5TNVwyDz3jSZXS6jdW2ARw1Dgf84XCG");
+exports.SBV2_MAINNET_PID = new web3_js_1.PublicKey("SW1TCH7qEPTdLsDHRgPuMQjbQxKdH2aBStViMFnt64f");
 /**
  * Switchboard precisioned representation of numbers.
  */
@@ -54,25 +53,26 @@ class SwitchboardDecimal {
      * @return a SwitchboardDecimal
      */
     static fromBig(big) {
-        let mantissa = big.c
-            .map((n) => new anchor.BN(n, 10))
-            .reduce((res, n) => {
-            res = res.mul(new anchor.BN(10, 10));
-            res = res.add(n);
-            return res;
-        });
+        let mantissa = new anchor.BN(big.c.join(""), 10);
         // Set the scale. Big.exponenet sets scale from the opposite side
         // SwitchboardDecimal does.
-        let scale = big.c.length - big.e - 1;
-        while (scale < 0) {
-            mantissa = mantissa.mul(new anchor.BN(10, 10));
-            scale += 1;
+        let scale = big.c.slice(1).length - big.e;
+        if (scale < 0) {
+            mantissa = mantissa.mul(new anchor.BN(10, 10).pow(new anchor.BN(Math.abs(scale), 10)));
+            scale = 0;
         }
-        assert_1.default.ok(scale >= 0, `${big.c.length}, ${big.e}`);
+        if (scale < 0) {
+            throw new Error(`SwitchboardDecimal: Unexpected negative scale.`);
+        }
         // Set sign for the coefficient (mantissa)
         mantissa = mantissa.mul(new anchor.BN(big.s, 10));
         const result = new SwitchboardDecimal(mantissa, scale);
-        assert_1.default.ok(big.sub(result.toBig()).abs().lt(new big_js_1.default(0.00005)), `${result.toBig()} ${big}`);
+        if (big.sub(result.toBig()).abs().gt(new big_js_1.default(0.00005))) {
+            throw new Error(`SwitchboardDecimal: Converted decimal does not match original:\n` +
+                `out: ${result.toBig().toNumber()} vs in: ${big.toNumber()}\n` +
+                `-- result mantissa and scale: ${result.mantissa.toString()} ${result.scale.toString()}\n` +
+                `${result} ${result.toBig()}`);
+        }
         return result;
     }
     /**
@@ -88,8 +88,28 @@ class SwitchboardDecimal {
      * @return Big representation
      */
     toBig() {
-        const scale = new big_js_1.default(10).pow(this.scale);
-        return new big_js_1.default(this.mantissa.toString()).div(scale);
+        let mantissa = new anchor.BN(this.mantissa, 10);
+        let s = 1;
+        let c = [];
+        const ZERO = new anchor.BN(0, 10);
+        const TEN = new anchor.BN(10, 10);
+        if (mantissa.lt(ZERO)) {
+            s = -1;
+            mantissa = mantissa.abs();
+        }
+        while (mantissa.gt(ZERO)) {
+            c.unshift(mantissa.mod(TEN).toNumber());
+            mantissa = mantissa.div(TEN);
+        }
+        let e = c.length - this.scale - 1;
+        if (c.length === 0) {
+            e = 0;
+        }
+        let result = new big_js_1.default(0);
+        result.s = s;
+        result.c = c;
+        result.e = e;
+        return result;
     }
 }
 exports.SwitchboardDecimal = SwitchboardDecimal;
@@ -991,13 +1011,11 @@ class OracleQueueAccount {
      * Switchboard IDL.
      */
     async loadData() {
-        var _a, _b, _c, _d;
+        var _a, _b;
         const queue = await this.program.account.oracleQueueAccountData.fetch(this.publicKey);
         const queueData = [];
         const buffer = (_b = (_a = (await this.program.provider.connection.getAccountInfo(queue.dataBuffer))) === null || _a === void 0 ? void 0 : _a.data.slice(8)) !== null && _b !== void 0 ? _b : Buffer.from("");
         const rowSize = 32;
-        queue.dataBuffer = (_c = queue.dataBuffer) === null || _c === void 0 ? void 0 : _c.toBase58();
-        queue.authority = (_d = queue.authority) === null || _d === void 0 ? void 0 : _d.toBase58();
         for (let i = 0; i < queue.size * rowSize; i += rowSize) {
             if (buffer.length - i < rowSize) {
                 break;
@@ -1007,7 +1025,7 @@ class OracleQueueAccount {
             if (key === web3_js_1.PublicKey.default) {
                 break;
             }
-            queueData.push(key.toBase58());
+            queueData.push(key);
         }
         queue.queue = queueData;
         queue.ebuf = undefined;
@@ -1389,8 +1407,9 @@ class CrankAccount {
      * @return TransactionSignature
      */
     async popTxn(params) {
-        var _a, _b, _c, _d;
-        const next = (_a = params.readyPubkeys) !== null && _a !== void 0 ? _a : (await this.peakNextReady(5));
+        var _a, _b, _c, _d, _e;
+        const failOpenOnAccountMismatch = (_a = params.failOpenOnMismatch) !== null && _a !== void 0 ? _a : false;
+        const next = (_b = params.readyPubkeys) !== null && _b !== void 0 ? _b : (await this.peakNextReady(5));
         if (next.length === 0) {
             throw new Error("Crank is not ready to be turned.");
         }
@@ -1423,8 +1442,8 @@ class CrankAccount {
         const permissionBumps = [];
         // Map bumps to the index of their corresponding feeds.
         for (const key of remainingAccounts) {
-            leaseBumps.push((_b = leaseBumpsMap.get(key.toBase58())) !== null && _b !== void 0 ? _b : 0);
-            permissionBumps.push((_c = permissionBumpsMap.get(key.toBase58())) !== null && _c !== void 0 ? _c : 0);
+            leaseBumps.push((_c = leaseBumpsMap.get(key.toBase58())) !== null && _c !== void 0 ? _c : 0);
+            permissionBumps.push((_d = permissionBumpsMap.get(key.toBase58())) !== null && _d !== void 0 ? _d : 0);
         }
         const [programStateAccount, stateBump] = ProgramStateAccount.fromSeed(this.program);
         const payerKeypair = web3_js_1.Keypair.fromSecretKey(this.program.provider.wallet.payer.secretKey);
@@ -1433,7 +1452,8 @@ class CrankAccount {
             stateBump,
             leaseBumps: Buffer.from(leaseBumps),
             permissionBumps: Buffer.from(permissionBumps),
-            nonce: (_d = params.nonce) !== null && _d !== void 0 ? _d : null,
+            nonce: (_e = params.nonce) !== null && _e !== void 0 ? _e : null,
+            failOpenOnAccountMismatch,
         }, {
             accounts: {
                 crank: this.publicKey,

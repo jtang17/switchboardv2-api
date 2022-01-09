@@ -9,13 +9,14 @@ import {
   TransactionSignature,
 } from "@solana/web3.js";
 import { OracleJob } from "@switchboard-xyz/switchboard-api";
-import assert from "assert";
 import Big from "big.js";
 import * as crypto from "crypto";
 
-// Devnet Program ID.
 export const SBV2_DEVNET_PID = new PublicKey(
   "2TfB33aLaneQb5TNVwyDz3jSZXS6jdW2ARw1Dgf84XCG"
+);
+export const SBV2_MAINNET_PID = new PublicKey(
+  "SW1TCH7qEPTdLsDHRgPuMQjbQxKdH2aBStViMFnt64f"
 );
 
 /**
@@ -42,31 +43,33 @@ export class SwitchboardDecimal {
    * @return a SwitchboardDecimal
    */
   public static fromBig(big: Big): SwitchboardDecimal {
-    let mantissa: anchor.BN = big.c
-      .map((n) => new anchor.BN(n, 10))
-      .reduce((res: anchor.BN, n: anchor.BN) => {
-        res = res.mul(new anchor.BN(10, 10));
-        res = res.add(n);
-        return res;
-      });
-
+    let mantissa: anchor.BN = new anchor.BN(big.c.join(""), 10);
     // Set the scale. Big.exponenet sets scale from the opposite side
     // SwitchboardDecimal does.
-    let scale = big.c.length - big.e - 1;
-    while (scale < 0) {
-      mantissa = mantissa.mul(new anchor.BN(10, 10));
-      scale += 1;
+    let scale = big.c.slice(1).length - big.e;
+
+    if (scale < 0) {
+      mantissa = mantissa.mul(
+        new anchor.BN(10, 10).pow(new anchor.BN(Math.abs(scale), 10))
+      );
+      scale = 0;
     }
-    assert.ok(scale >= 0, `${big.c.length}, ${big.e}`);
+    if (scale < 0) {
+      throw new Error(`SwitchboardDecimal: Unexpected negative scale.`);
+    }
 
     // Set sign for the coefficient (mantissa)
     mantissa = mantissa.mul(new anchor.BN(big.s, 10));
 
     const result = new SwitchboardDecimal(mantissa, scale);
-    assert.ok(
-      big.sub(result.toBig()).abs().lt(new Big(0.00005)),
-      `${result.toBig()} ${big}`
-    );
+    if (big.sub(result.toBig()).abs().gt(new Big(0.00005))) {
+      throw new Error(
+        `SwitchboardDecimal: Converted decimal does not match original:\n` +
+          `out: ${result.toBig().toNumber()} vs in: ${big.toNumber()}\n` +
+          `-- result mantissa and scale: ${result.mantissa.toString()} ${result.scale.toString()}\n` +
+          `${result} ${result.toBig()}`
+      );
+    }
     return result;
   }
 
@@ -84,8 +87,28 @@ export class SwitchboardDecimal {
    * @return Big representation
    */
   public toBig(): Big {
-    const scale = new Big(10).pow(this.scale);
-    return new Big(this.mantissa.toString()).div(scale);
+    let mantissa = new anchor.BN(this.mantissa, 10);
+    let s = 1;
+    let c: Array<number> = [];
+    const ZERO = new anchor.BN(0, 10);
+    const TEN = new anchor.BN(10, 10);
+    if (mantissa.lt(ZERO)) {
+      s = -1;
+      mantissa = mantissa.abs();
+    }
+    while (mantissa.gt(ZERO)) {
+      c.unshift(mantissa.mod(TEN).toNumber());
+      mantissa = mantissa.div(TEN);
+    }
+    let e = c.length - this.scale - 1;
+    if (c.length === 0) {
+      e = 0;
+    }
+    let result = new Big(0);
+    result.s = s;
+    result.c = c;
+    result.e = e;
+    return result;
   }
 }
 
@@ -1610,8 +1633,6 @@ export class OracleQueueAccount {
         await this.program.provider.connection.getAccountInfo(queue.dataBuffer)
       )?.data.slice(8) ?? Buffer.from("");
     const rowSize = 32;
-    queue.dataBuffer = queue.dataBuffer?.toBase58();
-    queue.authority = queue.authority?.toBase58();
     for (let i = 0; i < queue.size * rowSize; i += rowSize) {
       if (buffer.length - i < rowSize) {
         break;
@@ -1621,7 +1642,7 @@ export class OracleQueueAccount {
       if (key === PublicKey.default) {
         break;
       }
-      queueData.push(key.toBase58());
+      queueData.push(key);
     }
     queue.queue = queueData;
     queue.ebuf = undefined;
@@ -2038,6 +2059,7 @@ export interface CrankPopParams {
   crank: any;
   queue: any;
   tokenMint: PublicKey;
+  failOpenOnMismatch?: boolean;
 }
 
 /**
@@ -2259,6 +2281,7 @@ export class CrankAccount {
    * @return TransactionSignature
    */
   async popTxn(params: CrankPopParams): Promise<Transaction> {
+    const failOpenOnAccountMismatch = params.failOpenOnMismatch ?? false;
     const next = params.readyPubkeys ?? (await this.peakNextReady(5));
     if (next.length === 0) {
       throw new Error("Crank is not ready to be turned.");
@@ -2326,6 +2349,7 @@ export class CrankAccount {
         leaseBumps: Buffer.from(leaseBumps),
         permissionBumps: Buffer.from(permissionBumps),
         nonce: params.nonce ?? null,
+        failOpenOnAccountMismatch,
       },
       {
         accounts: {

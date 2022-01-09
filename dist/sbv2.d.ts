@@ -6,6 +6,7 @@ import { OracleJob } from "@switchboard-xyz/switchboard-api";
 import Big from "big.js";
 import * as crypto from "crypto";
 export declare const SBV2_DEVNET_PID: anchor.web3.PublicKey;
+export declare const SBV2_MAINNET_PID: anchor.web3.PublicKey;
 /**
  * Switchboard precisioned representation of numbers.
  */
@@ -844,6 +845,7 @@ export interface CrankPopParams {
     crank: any;
     queue: any;
     tokenMint: PublicKey;
+    failOpenOnMismatch?: boolean;
 }
 /**
  * Parameters for pushing an element into a CrankAccount.
